@@ -1,6 +1,6 @@
 """
-Health Insights Agent - Camera Component
-Camera and document capture module for the hackathon project
+Health Insights Agent - Camera Component (Cleaned Version)
+Camera and document capture module with TrOCR integration
 """
 
 import cv2
@@ -8,8 +8,9 @@ import os
 import uuid
 import asyncio
 import sqlite3
-import hashlib
 import json
+import logging
+import shutil
 from datetime import datetime
 from dataclasses import dataclass, asdict
 from enum import Enum
@@ -17,6 +18,15 @@ from typing import Optional, List, Callable
 from PIL import Image, ImageEnhance, ImageOps
 import numpy as np
 from pathlib import Path
+
+# TrOCR imports
+try:
+    from transformers import TrOCRProcessor, VisionEncoderDecoderModel
+    import torch
+    TROCR_AVAILABLE = True
+except ImportError:
+    TROCR_AVAILABLE = False
+    print("Warning: TrOCR not available. Install with: pip install transformers torch")
 
 
 class DocumentType(Enum):
@@ -94,9 +104,31 @@ class DocumentStorage:
     
     def __init__(self, storage_path: str):
         self.storage_path = Path(storage_path)
-        self.storage_path.mkdir(exist_ok=True)
+        self.storage_path.mkdir(exist_ok=True, mode=0o700)  # Secure permissions
         self.db_path = self.storage_path / "documents.db"
+        self.audit_logger = self._setup_audit_logger()
         self._init_database()
+    
+    def _setup_audit_logger(self):
+        """Setup audit logging for compliance"""
+        logger = logging.getLogger('document_audit')
+        logger.setLevel(logging.INFO)
+        
+        # Remove existing handlers to prevent duplicates
+        for handler in logger.handlers[:]:
+            logger.removeHandler(handler)
+        
+        log_file = self.storage_path / 'audit.log'
+        handler = logging.FileHandler(log_file)
+        formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+        handler.setFormatter(formatter)
+        logger.addHandler(handler)
+        
+        # Secure log file permissions
+        if log_file.exists():
+            os.chmod(log_file, 0o600)
+        
+        return logger
     
     def _init_database(self):
         """Initialize SQLite database"""
@@ -122,9 +154,12 @@ class DocumentStorage:
         
         conn.commit()
         conn.close()
+        
+        # Secure database permissions
+        os.chmod(self.db_path, 0o600)
     
     def save_document(self, doc: CapturedDocument) -> bool:
-        """Save document metadata to database"""
+        """Save document metadata to database with audit logging"""
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
@@ -151,9 +186,13 @@ class DocumentStorage:
             
             conn.commit()
             conn.close()
+            
+            # Audit logging
+            self.audit_logger.info(f"Document saved: {doc.id} ({doc.document_type.value})")
             return True
             
         except Exception as e:
+            self.audit_logger.error(f"Failed to save document {doc.id}: {e}")
             raise StorageError(f"Failed to save document: {e}")
     
     def get_all_documents(self) -> List[CapturedDocument]:
@@ -200,81 +239,118 @@ class DocumentStorage:
             conn.commit()
             conn.close()
             
+            if deleted:
+                self.audit_logger.info(f"Document deleted: {document_id}")
+            
             return deleted
             
         except Exception as e:
+            self.audit_logger.error(f"Failed to delete document {document_id}: {e}")
             raise StorageError(f"Failed to delete document: {e}")
-    def _create_connection_pool(self):
-        """ADD: Connection pooling for better performance"""
-        from queue import Queue
-        import sqlite3
-        
-        pool = Queue(maxsize=5)
-        for _ in range(5):
-            conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
-            pool.put(conn)
-        return pool
-    
-    def _setup_audit_logger(self):
-        """ADD: Audit logging for compliance"""
-        import logging
-        logger = logging.getLogger('document_audit')
-        logger.setLevel(logging.INFO)
-        
-        handler = logging.FileHandler(self.storage_path / 'audit.log')
-        formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-        handler.setFormatter(formatter)
-        logger.addHandler(handler)
-        return logger
-    
-    def save_document(self, doc: CapturedDocument) -> bool:
-        """MODIFY: Add audit logging to your existing method"""
-        try:
-            # Your existing code here...
-            conn = self.connection_pool.get()  # CHANGE: Use connection pool
-            cursor = conn.cursor()
-            
-            # Your existing SQL insert code stays the same...
-            cursor.execute('''
-                INSERT OR REPLACE INTO documents 
-                (id, file_path, document_type, capture_date, file_size, 
-                 image_width, image_height, is_processed, ocr_text, 
-                 confidence_score, tags)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                doc.id, doc.file_path, doc.document_type.value,
-                doc.capture_date.isoformat(), doc.file_size,
-                doc.image_width, doc.image_height, doc.is_processed,
-                doc.ocr_text, doc.confidence_score,
-                json.dumps(doc.tags) if doc.tags else None
-            ))
-            
-            conn.commit()
-            self.connection_pool.put(conn)  # CHANGE: Return to pool
-            
-            # ADD: Audit logging
-            self.audit_logger.info(f"Document saved: {doc.id}")
-            return True
-            
-        except Exception as e:
-            self.audit_logger.error(f"Failed to save document {doc.id}: {e}")
-            raise StorageError(f"Failed to save document: {e}")
-
 
 
 class ImageProcessor:
-    """Handles image processing and optimization"""
+    """Handles image processing and TrOCR integration"""
+    
+    def __init__(self):
+        """Initialize TrOCR models"""
+        self.trocr_handwritten = None
+        self.trocr_printed = None
+        self.trocr_processor = None
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu") if TROCR_AVAILABLE else None
+        
+        if TROCR_AVAILABLE:
+            print(f"TrOCR will use device: {self.device}")
+        else:
+            print("TrOCR not available - OCR functionality disabled")
+    
+    def _load_trocr_model(self, model_name: str):
+        """Load TrOCR model on demand"""
+        if not TROCR_AVAILABLE:
+            raise ImportError("TrOCR not available")
+        
+        try:
+            print(f"Loading TrOCR model: {model_name}")
+            processor = TrOCRProcessor.from_pretrained(model_name)
+            model = VisionEncoderDecoderModel.from_pretrained(model_name)
+            model.to(self.device)
+            return processor, model
+            
+        except Exception as e:
+            raise ImageProcessingError(f"Failed to load TrOCR model: {e}")
+    
+    def extract_text_with_trocr(self, image_path: str, doc_type: DocumentType) -> tuple[str, float]:
+        """Extract text using TrOCR (optimized for medical documents)"""
+        
+        if not TROCR_AVAILABLE:
+            return "", 0.0
+        
+        try:
+            # Choose model based on document type
+            if doc_type == DocumentType.PRESCRIPTION:
+                # Prescriptions are often handwritten
+                if not self.trocr_handwritten:
+                    self.trocr_processor, self.trocr_handwritten = self._load_trocr_model(
+                        'microsoft/trocr-base-handwritten'
+                    )
+                processor, model = self.trocr_processor, self.trocr_handwritten
+            else:
+                # Lab reports, insurance cards are usually printed
+                if not self.trocr_printed:
+                    self.trocr_processor, self.trocr_printed = self._load_trocr_model(
+                        'microsoft/trocr-base-printed'
+                    )
+                processor, model = self.trocr_processor, self.trocr_printed
+            
+            # Load and preprocess image
+            image = Image.open(image_path).convert('RGB')
+            pixel_values = processor(image, return_tensors="pt").pixel_values.to(self.device)
+            
+            # Generate text
+            generated_ids = model.generate(pixel_values)
+            generated_text = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
+            
+            # Estimate confidence score
+            confidence = self._estimate_trocr_confidence(generated_text)
+            
+            return generated_text.strip(), confidence
+            
+        except Exception as e:
+            print(f"TrOCR processing failed: {e}")
+            raise ImageProcessingError(f"TrOCR processing failed: {e}")
+    
+    def _estimate_trocr_confidence(self, text: str) -> float:
+        """Estimate confidence for TrOCR output"""
+        if not text or len(text) < 3:
+            return 0.0
+        
+        confidence = 0.8  # Base confidence for TrOCR
+        
+        # Adjust based on text characteristics
+        if len(text) > 50:
+            confidence += 0.1
+        
+        # Check for medical terms
+        medical_terms = ['mg', 'prescription', 'patient', 'doctor', 'medicine', 'dose', 'lab', 'result']
+        if any(term.lower() in text.lower() for term in medical_terms):
+            confidence += 0.1
+        
+        # Check for obvious errors
+        error_patterns = ['###', '???', '***']
+        if any(pattern in text for pattern in error_patterns):
+            confidence -= 0.3
+        
+        return min(confidence, 1.0)
     
     @staticmethod
     def enhance_for_ocr(image_path: str, output_path: str) -> str:
         """Optimize image for OCR processing"""
         try:
-            # Open image with Pillow
             image = Image.open(image_path)
             
-            # Convert to grayscale
-            if image.mode != 'L':
-                image = image.convert('L')
+            # Convert to RGB for consistency
+            if image.mode != 'RGB':
+                image = image.convert('RGB')
             
             # Enhance contrast
             enhancer = ImageEnhance.Contrast(image)
@@ -283,9 +359,6 @@ class ImageProcessor:
             # Enhance sharpness
             enhancer = ImageEnhance.Sharpness(image)
             image = enhancer.enhance(1.1)
-            
-            # Auto-adjust levels
-            image = ImageOps.autocontrast(image)
             
             # Save optimized image
             image.save(output_path, optimize=True, quality=95)
@@ -300,24 +373,19 @@ class ImageProcessor:
         try:
             image = Image.open(image_path)
             
-            # Check if resize needed
             if image.size[0] <= max_size[0] and image.size[1] <= max_size[1]:
                 return image_path
             
-            # Calculate new size maintaining aspect ratio
             image.thumbnail(max_size, Image.Resampling.LANCZOS)
-            
-            # Save resized image
             image.save(image_path, optimize=True)
             return image_path
             
         except Exception as e:
             raise ImageProcessingError(f"Failed to resize image: {e}")
-        
-    # ADD: Privacy protection methods
+    
     @staticmethod
     def strip_metadata(image_path: str) -> str:
-        """ADD: Remove EXIF and metadata for privacy"""
+        """Remove EXIF and metadata for privacy"""
         try:
             image = Image.open(image_path)
             
@@ -327,6 +395,7 @@ class ImageProcessor:
             
             # Save without metadata
             clean_image.save(image_path)
+            os.chmod(image_path, 0o600)  # Secure file permissions
             return image_path
             
         except Exception as e:
@@ -334,8 +403,13 @@ class ImageProcessor:
     
     @staticmethod
     def validate_file_safety(file_path: str) -> bool:
-        """ADD: Validate file is safe image"""
+        """Validate file is safe image"""
         try:
+            # Check file size (50MB limit)
+            file_size = os.path.getsize(file_path)
+            if file_size > 50 * 1024 * 1024:
+                return False
+            
             # Check file signature
             with open(file_path, 'rb') as f:
                 header = f.read(10)
@@ -344,12 +418,13 @@ class ImageProcessor:
                 b'\xFF\xD8\xFF',  # JPEG
                 b'\x89PNG\r\n\x1a\n',  # PNG
                 b'GIF87a', b'GIF89a',  # GIF
+                b'RIFF',  # TIFF
             ]
             
             if not any(header.startswith(sig) for sig in image_signatures):
                 return False
             
-            # Additional PIL validation
+            # PIL validation
             with Image.open(file_path) as img:
                 img.verify()
             return True
@@ -357,27 +432,56 @@ class ImageProcessor:
             return False
 
 
-
 class DocumentCamera:
-    """Main camera component for document capture"""
+    """Main camera component for document capture with TrOCR integration"""
     
     def __init__(self, config: CameraConfig):
-        self.config = config
+        self.config = self._validate_config(config)
         self.storage = DocumentStorage(config.save_directory)
         self.image_processor = ImageProcessor()
         self.progress_callback: Optional[Callable] = None
         self._camera = None
         
-        # Ensure directories exist
-        Path(config.save_directory).mkdir(exist_ok=True)
-        Path(config.save_directory, "processed").mkdir(exist_ok=True)
+        # Ensure directories exist with secure permissions
+        Path(config.save_directory).mkdir(exist_ok=True, mode=0o700)
+        Path(config.save_directory, "processed").mkdir(exist_ok=True, mode=0o700)
+        
+        print(f"DocumentCamera initialized. Storage: {config.save_directory}")
+    
+    def _validate_config(self, config: CameraConfig) -> CameraConfig:
+        """Validate configuration settings"""
+        save_dir = Path(config.save_directory)
+        if not save_dir.exists():
+            save_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        
+        valid_formats = ['PNG', 'JPEG', 'JPG', 'TIFF']
+        if config.image_format.upper() not in valid_formats:
+            raise ValueError(f"Invalid image format: {config.image_format}")
+        
+        if config.max_image_size:
+            w, h = config.max_image_size
+            if w < 100 or h < 100:
+                raise ValueError("Image size too small")
+        
+        return config
     
     def _initialize_camera(self):
-        """Initialize camera if not already done"""
+        """Initialize camera with retry logic"""
         if self._camera is None:
-            self._camera = cv2.VideoCapture(0)
-            if not self._camera.isOpened():
-                raise CameraNotAvailableError("Cannot access camera")
+            for camera_index in range(3):  # Try different camera indices
+                try:
+                    self._camera = cv2.VideoCapture(camera_index)
+                    if self._camera.isOpened():
+                        print(f"Camera initialized (index: {camera_index})")
+                        return
+                except:
+                    pass
+                
+                if self._camera:
+                    self._camera.release()
+                    self._camera = None
+            
+            raise CameraNotAvailableError("No camera available")
     
     def _generate_document_id(self) -> str:
         """Generate unique document ID"""
@@ -388,13 +492,38 @@ class DocumentCamera:
         if self.progress_callback:
             self.progress_callback(message, progress)
     
+    def _secure_delete(self, file_path: str):
+        """Securely delete file"""
+        if not os.path.exists(file_path):
+            return
+        
+        try:
+            file_size = os.path.getsize(file_path)
+            
+            # Overwrite with random data
+            with open(file_path, 'r+b') as f:
+                for _ in range(3):  # 3 passes
+                    f.seek(0)
+                    f.write(os.urandom(file_size))
+                    f.flush()
+                    os.fsync(f.fileno())
+            
+            os.remove(file_path)
+            
+        except Exception:
+            # Fallback to regular delete
+            try:
+                os.remove(file_path)
+            except:
+                pass
+    
     async def capture_document(self, doc_type: DocumentType = DocumentType.OTHER) -> CapturedDocument:
-        """Capture a new document photo"""
+        """Capture a new document photo with automatic OCR processing"""
         try:
             self._call_progress("Initializing camera...", 0.1)
             self._initialize_camera()
             
-            self._call_progress("Capturing image...", 0.3)
+            self._call_progress("Capturing image...", 0.2)
             
             # Capture frame
             ret, frame = self._camera.read()
@@ -407,7 +536,7 @@ class DocumentCamera:
             filename = f"{doc_type.value}_{timestamp}_{doc_id[:8]}.{self.config.image_format.lower()}"
             file_path = Path(self.config.save_directory) / filename
             
-            self._call_progress("Processing image...", 0.5)
+            self._call_progress("Processing image...", 0.3)
             
             # Save original image
             cv2.imwrite(str(file_path), frame)
@@ -415,16 +544,24 @@ class DocumentCamera:
             # Get image dimensions
             height, width = frame.shape[:2]
             
+            # Apply privacy protection
+            self.image_processor.strip_metadata(str(file_path))
+            
             # Resize if needed
             if self.config.max_image_size:
                 self.image_processor.resize_image(str(file_path), self.config.max_image_size)
             
-            # Get file size
+            self._call_progress("Extracting text with TrOCR...", 0.6)
+            
+            # Extract text with TrOCR
+            ocr_text, confidence = self.image_processor.extract_text_with_trocr(str(file_path), doc_type)
+            
+            # Get final file size
             file_size = os.path.getsize(file_path)
             
-            self._call_progress("Saving document...", 0.8)
+            self._call_progress("Saving document...", 0.9)
             
-            # Create document object
+            # Create document object with OCR results
             document = CapturedDocument(
                 id=doc_id,
                 file_path=str(file_path),
@@ -432,7 +569,10 @@ class DocumentCamera:
                 capture_date=datetime.now(),
                 file_size=file_size,
                 image_width=width,
-                image_height=height
+                image_height=height,
+                is_processed=True,  # Mark as processed since we did OCR
+                ocr_text=ocr_text,
+                confidence_score=confidence
             )
             
             # Save to database
@@ -447,12 +587,16 @@ class DocumentCamera:
             raise CameraError(f"Capture failed: {e}")
     
     async def import_from_file(self, file_path: str, doc_type: DocumentType) -> CapturedDocument:
-        """Import existing image file"""
+        """Import existing image file with validation and OCR processing"""
         try:
             if not os.path.exists(file_path):
                 raise StorageError(f"File not found: {file_path}")
             
-            self._call_progress("Reading file...", 0.2)
+            # Validate file safety
+            if not self.image_processor.validate_file_safety(file_path):
+                raise StorageError("Invalid or unsafe file type")
+            
+            self._call_progress("Reading file...", 0.1)
             
             # Read image to get dimensions
             image = cv2.imread(file_path)
@@ -467,21 +611,28 @@ class DocumentCamera:
             filename = f"{doc_type.value}_{timestamp}_{doc_id[:8]}.{self.config.image_format.lower()}"
             new_path = Path(self.config.save_directory) / filename
             
-            self._call_progress("Copying file...", 0.5)
+            self._call_progress("Copying and processing file...", 0.3)
             
             # Copy to our storage directory
-            import shutil
             shutil.copy2(file_path, new_path)
+            
+            # Apply privacy protection
+            self.image_processor.strip_metadata(str(new_path))
             
             # Resize if needed
             if self.config.max_image_size:
                 self.image_processor.resize_image(str(new_path), self.config.max_image_size)
             
+            self._call_progress("Extracting text with TrOCR...", 0.6)
+            
+            # Extract text with TrOCR
+            ocr_text, confidence = self.image_processor.extract_text_with_trocr(str(new_path), doc_type)
+            
             file_size = os.path.getsize(new_path)
             
-            self._call_progress("Saving document...", 0.8)
+            self._call_progress("Saving document...", 0.9)
             
-            # Create document object
+            # Create document object with OCR results
             document = CapturedDocument(
                 id=doc_id,
                 file_path=str(new_path),
@@ -489,7 +640,10 @@ class DocumentCamera:
                 capture_date=datetime.now(),
                 file_size=file_size,
                 image_width=width,
-                image_height=height
+                image_height=height,
+                is_processed=True,  # Mark as processed since we did OCR
+                ocr_text=ocr_text,
+                confidence_score=confidence
             )
             
             # Save to database
@@ -503,20 +657,6 @@ class DocumentCamera:
                 raise
             raise StorageError(f"Import failed: {e}")
     
-    async def capture_multiple(self, count: int, doc_type: DocumentType) -> List[CapturedDocument]:
-        """Capture multiple documents in sequence"""
-        documents = []
-        
-        for i in range(count):
-            self._call_progress(f"Capturing document {i+1}/{count}...", i/count)
-            doc = await self.capture_document(doc_type)
-            documents.append(doc)
-            
-            # Small delay between captures
-            await asyncio.sleep(0.5)
-        
-        return documents
-    
     def get_all_documents(self) -> List[CapturedDocument]:
         """Get list of all captured documents"""
         return self.storage.get_all_documents()
@@ -527,9 +667,8 @@ class DocumentCamera:
         return [doc for doc in all_docs if doc.document_type == doc_type]
     
     def delete_document(self, document_id: str) -> bool:
-        """Delete a document and its file"""
+        """Delete a document and its file securely"""
         try:
-            # Get document info first
             documents = self.get_all_documents()
             doc_to_delete = None
             
@@ -541,14 +680,14 @@ class DocumentCamera:
             if not doc_to_delete:
                 return False
             
-            # Delete file
+            # Secure delete file
             if os.path.exists(doc_to_delete.file_path):
-                os.remove(doc_to_delete.file_path)
+                self._secure_delete(doc_to_delete.file_path)
             
             # Delete processed version if exists
             processed_path = self._get_processed_path(doc_to_delete.file_path)
             if os.path.exists(processed_path):
-                os.remove(processed_path)
+                self._secure_delete(processed_path)
             
             # Delete from database
             return self.storage.delete_document(document_id)
@@ -556,39 +695,14 @@ class DocumentCamera:
         except Exception as e:
             raise StorageError(f"Failed to delete document: {e}")
     
-    def preprocess_for_ocr(self, document: CapturedDocument) -> str:
-        """Return path to OCR-optimized version of image"""
-        try:
-            # Generate processed file path
-            processed_path = self._get_processed_path(document.file_path)
-            
-            # Check if processed version already exists
-            if os.path.exists(processed_path):
-                return processed_path
-            
-            # Create processed version
-            return self.image_processor.enhance_for_ocr(document.file_path, processed_path)
-            
-        except Exception as e:
-            raise ImageProcessingError(f"Failed to preprocess image: {e}")
-    
     def _get_processed_path(self, original_path: str) -> str:
         """Generate path for processed image"""
         path_obj = Path(original_path)
         processed_dir = path_obj.parent / "processed"
-        processed_dir.mkdir(exist_ok=True)
+        processed_dir.mkdir(exist_ok=True, mode=0o700)
         
-        # Add _processed suffix
         stem = path_obj.stem + "_processed"
         return str(processed_dir / f"{stem}{path_obj.suffix}")
-    
-    def get_image_data(self, document: CapturedDocument) -> bytes:
-        """Get raw image bytes for processing"""
-        try:
-            with open(document.file_path, 'rb') as f:
-                return f.read()
-        except Exception as e:
-            raise StorageError(f"Failed to read image data: {e}")
     
     def set_progress_callback(self, callback: Callable[[str, float], None]):
         """Set function to call during long operations"""
@@ -599,98 +713,63 @@ class DocumentCamera:
         if self._camera is not None:
             self._camera.release()
             self._camera = None
+            print("Camera resources released")
     
     def __del__(self):
         """Cleanup when object is destroyed"""
         self.cleanup()
 
-class SecurityManager:
-    """ADD: New class for security operations"""
-    
-    @staticmethod
-    def secure_delete(file_path: str):
-        """Securely overwrite and delete file"""
-        if not os.path.exists(file_path):
-            return
-        
-        file_size = os.path.getsize(file_path)
-        with open(file_path, 'r+b') as f:
-            # Overwrite with random data 3 times
-            for _ in range(3):
-                f.seek(0)
-                f.write(os.urandom(file_size))
-                f.flush()
-                os.fsync(f.fileno())
-        
-        os.remove(file_path)
 
-class ConfigValidator:
-    """ADD: New class for validating configuration"""
+# Testing and example usage
+async def test_enhanced_camera():
+    """Test the enhanced camera component with TrOCR"""
+    print("Testing Enhanced Medical Document Camera with TrOCR...")
     
-    @staticmethod
-    def validate(config: CameraConfig) -> bool:
-        # Validation logic
-        save_dir = Path(config.save_directory)
-        if not save_dir.exists():
-            save_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-        
-        valid_formats = ['PNG', 'JPEG', 'JPG']
-        if config.image_format.upper() not in valid_formats:
-            raise ValueError(f"Invalid format: {config.image_format}")
-        
-        return True
-    
-# Example usage and testing
-async def test_camera_component():
-    """Test function to verify camera component works"""
-    print("Testing Camera Component...")
-    
-    # Initialize camera with config
     config = CameraConfig(
-        save_directory="./test_documents",
-        max_image_size=(1280, 720),
+        save_directory="./medical_documents",
+        max_image_size=(1920, 1080),
         auto_enhance=True
     )
     
     camera = DocumentCamera(config)
     
-    # Set progress callback
     def progress_callback(message: str, progress: float):
         print(f"Progress: {message} ({progress*100:.1f}%)")
     
     camera.set_progress_callback(progress_callback)
     
     try:
-        # Test capture (you'll need a camera for this)
-        print("\nTesting document capture...")
-        # doc = await camera.capture_document(DocumentType.PRESCRIPTION)
-        # print(f"Captured document: {doc.id}")
+        # Test file import with TrOCR
+        test_images = ["test_prescription.jpg", "test_image.jpg", "sample.png"]
         
-        # Test import from file (create a test image first)
-        test_image_path = "test_image.jpg"
-        if os.path.exists(test_image_path):
-            print(f"\nTesting file import...")
-            doc = await camera.import_from_file(test_image_path, DocumentType.LAB_REPORT)
-            print(f"Imported document: {doc.id}")
-            
-            # Test OCR preprocessing
-            processed_path = camera.preprocess_for_ocr(doc)
-            print(f"Processed image saved to: {processed_path}")
+        for test_image in test_images:
+            if os.path.exists(test_image):
+                print(f"\nTesting import: {test_image}")
+                doc = await camera.import_from_file(test_image, DocumentType.PRESCRIPTION)
+                print(f"Imported document: {doc.id}")
+                print(f"OCR Text: {doc.ocr_text[:100]}..." if doc.ocr_text else "No text extracted")
+                print(f"Confidence: {doc.confidence_score:.2f}" if doc.confidence_score else "N/A")
+                break
         
-        # Test getting all documents
+        # Show all documents
         all_docs = camera.get_all_documents()
         print(f"\nTotal documents: {len(all_docs)}")
         
-        for doc in all_docs:
-            print(f"- {doc.document_type.value}: {doc.id} ({doc.file_size} bytes)")
+        for doc in all_docs[:5]:  # Show first 5
+            print(f"- {doc.document_type.value}: {doc.id}")
+            if doc.ocr_text:
+                print(f"  Text: {doc.ocr_text[:50]}...")
+            print(f"  Confidence: {doc.confidence_score:.2f}" if doc.confidence_score else "  No confidence score")
     
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Error during testing: {e}")
+        import traceback
+        traceback.print_exc()
     
     finally:
         camera.cleanup()
 
 
 if __name__ == "__main__":
-    # Run test
-    asyncio.run(test_camera_component())
+    # Run enhanced test
+    asyncio.run(test_enhanced_camera())
