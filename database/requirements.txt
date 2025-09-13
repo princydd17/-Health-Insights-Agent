@@ -1,0 +1,19 @@
+# Core DB + ORM
+sqlalchemy
+python-dotenv
+
+# Encryption
+cryptography
+
+# QR code generation
+qrcode
+pillow   # qrcode uses Pillow under the hood
+
+# HTTP requests (for Fitbit API or mock integrations)
+requests
+
+# Optional: Fitbit API client (can be heavy, you may prefer direct requests)
+# python-fitbit
+
+# Optional: OAuth2 helper if you want to implement Fitbit auth manually
+# requests-oauthlib
