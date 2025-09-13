@@ -204,6 +204,62 @@ class DocumentStorage:
             
         except Exception as e:
             raise StorageError(f"Failed to delete document: {e}")
+    def _create_connection_pool(self):
+        """ADD: Connection pooling for better performance"""
+        from queue import Queue
+        import sqlite3
+        
+        pool = Queue(maxsize=5)
+        for _ in range(5):
+            conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
+            pool.put(conn)
+        return pool
+    
+    def _setup_audit_logger(self):
+        """ADD: Audit logging for compliance"""
+        import logging
+        logger = logging.getLogger('document_audit')
+        logger.setLevel(logging.INFO)
+        
+        handler = logging.FileHandler(self.storage_path / 'audit.log')
+        formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+        handler.setFormatter(formatter)
+        logger.addHandler(handler)
+        return logger
+    
+    def save_document(self, doc: CapturedDocument) -> bool:
+        """MODIFY: Add audit logging to your existing method"""
+        try:
+            # Your existing code here...
+            conn = self.connection_pool.get()  # CHANGE: Use connection pool
+            cursor = conn.cursor()
+            
+            # Your existing SQL insert code stays the same...
+            cursor.execute('''
+                INSERT OR REPLACE INTO documents 
+                (id, file_path, document_type, capture_date, file_size, 
+                 image_width, image_height, is_processed, ocr_text, 
+                 confidence_score, tags)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                doc.id, doc.file_path, doc.document_type.value,
+                doc.capture_date.isoformat(), doc.file_size,
+                doc.image_width, doc.image_height, doc.is_processed,
+                doc.ocr_text, doc.confidence_score,
+                json.dumps(doc.tags) if doc.tags else None
+            ))
+            
+            conn.commit()
+            self.connection_pool.put(conn)  # CHANGE: Return to pool
+            
+            # ADD: Audit logging
+            self.audit_logger.info(f"Document saved: {doc.id}")
+            return True
+            
+        except Exception as e:
+            self.audit_logger.error(f"Failed to save document {doc.id}: {e}")
+            raise StorageError(f"Failed to save document: {e}")
+
 
 
 class ImageProcessor:
@@ -257,6 +313,49 @@ class ImageProcessor:
             
         except Exception as e:
             raise ImageProcessingError(f"Failed to resize image: {e}")
+        
+    # ADD: Privacy protection methods
+    @staticmethod
+    def strip_metadata(image_path: str) -> str:
+        """ADD: Remove EXIF and metadata for privacy"""
+        try:
+            image = Image.open(image_path)
+            
+            # Create clean image without EXIF
+            clean_image = Image.new(image.mode, image.size)
+            clean_image.putdata(list(image.getdata()))
+            
+            # Save without metadata
+            clean_image.save(image_path)
+            return image_path
+            
+        except Exception as e:
+            raise ImageProcessingError(f"Failed to strip metadata: {e}")
+    
+    @staticmethod
+    def validate_file_safety(file_path: str) -> bool:
+        """ADD: Validate file is safe image"""
+        try:
+            # Check file signature
+            with open(file_path, 'rb') as f:
+                header = f.read(10)
+            
+            image_signatures = [
+                b'\xFF\xD8\xFF',  # JPEG
+                b'\x89PNG\r\n\x1a\n',  # PNG
+                b'GIF87a', b'GIF89a',  # GIF
+            ]
+            
+            if not any(header.startswith(sig) for sig in image_signatures):
+                return False
+            
+            # Additional PIL validation
+            with Image.open(file_path) as img:
+                img.verify()
+            return True
+        except:
+            return False
+
 
 
 class DocumentCamera:
@@ -505,7 +604,42 @@ class DocumentCamera:
         """Cleanup when object is destroyed"""
         self.cleanup()
 
+class SecurityManager:
+    """ADD: New class for security operations"""
+    
+    @staticmethod
+    def secure_delete(file_path: str):
+        """Securely overwrite and delete file"""
+        if not os.path.exists(file_path):
+            return
+        
+        file_size = os.path.getsize(file_path)
+        with open(file_path, 'r+b') as f:
+            # Overwrite with random data 3 times
+            for _ in range(3):
+                f.seek(0)
+                f.write(os.urandom(file_size))
+                f.flush()
+                os.fsync(f.fileno())
+        
+        os.remove(file_path)
 
+class ConfigValidator:
+    """ADD: New class for validating configuration"""
+    
+    @staticmethod
+    def validate(config: CameraConfig) -> bool:
+        # Validation logic
+        save_dir = Path(config.save_directory)
+        if not save_dir.exists():
+            save_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        
+        valid_formats = ['PNG', 'JPEG', 'JPG']
+        if config.image_format.upper() not in valid_formats:
+            raise ValueError(f"Invalid format: {config.image_format}")
+        
+        return True
+    
 # Example usage and testing
 async def test_camera_component():
     """Test function to verify camera component works"""
