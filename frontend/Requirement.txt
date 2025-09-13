@@ -1,0 +1,33 @@
+# Health Insights Agent - Camera Component Dependencies
+# Install with: pip install -r requirements.txt
+
+# Core camera and image processing
+opencv-python>=4.8.0
+Pillow>=10.0.0
+numpy>=1.24.0
+
+# Async support
+asyncio-mqtt>=0.11.1
+
+# Data handling
+sqlite3  # Built into Python, but listed for clarity
+
+# Optional UI libraries (choose one based on your team's UI person preference)
+# tkinter  # Built into Python
+# PyQt5>=5.15.0
+# PySide6>=6.5.0
+
+# For packaging to .EXE/.MSIX later (install when ready to package)
+# pyinstaller>=5.13.0
+# cx-Freeze>=6.15.0
+
+# Development and testing
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+
+# Utility libraries
+pathlib  # Built into Python 3.4+
+uuid  # Built into Python
+hashlib  # Built into Python
+json  # Built into Python
+shutil  # Built into Python
