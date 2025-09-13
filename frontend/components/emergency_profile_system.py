@@ -8,7 +8,7 @@ import qrcode
 import io
 import base64
 from datetime import datetime, timedelta
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from typing import List, Dict, Optional, Any
 from enum import Enum
 from pathlib import Path
@@ -92,35 +92,31 @@ class VitalMetric:
 @dataclass
 class EmergencyProfile:
     """Complete emergency medical profile"""
-    # Basic Information
+    # Basic Information (required)
     patient_name: str
     date_of_birth: datetime
     blood_type: BloodType
     gender: str
-    weight_kg: Optional[float] = None
-    height_cm: Optional[float] = None
     
-    # Critical Information
+    # Critical Information (required)
     allergies: List[Allergy]
     medications: List[Medication]
     medical_conditions: List[MedicalCondition]
     surgeries: List[Surgery]
-    
-    # Contact Information
     emergency_contact: EmergencyContact
-    primary_doctor: Optional[str] = None
-    primary_doctor_phone: Optional[str] = None
-    
-    # Recent Vitals (last 7 days)
     recent_vitals: List[VitalMetric]
     
-    # Additional Critical Info
-    medical_devices: List[str]  # Pacemaker, insulin pump, etc.
+    # Metadata (required)
+    last_updated: datetime
+    
+    # Optional Information
+    weight_kg: Optional[float] = None
+    height_cm: Optional[float] = None
+    primary_doctor: Optional[str] = None
+    primary_doctor_phone: Optional[str] = None
+    medical_devices: List[str] = field(default_factory=list)
     advance_directives: Optional[str] = None
     insurance_info: Optional[str] = None
-    
-    # Metadata
-    last_updated: datetime
     profile_version: str = "1.0"
     
     def to_emergency_dict(self) -> Dict[str, Any]:
@@ -456,15 +452,12 @@ class EmergencyProfileManager:
             date_of_birth=datetime.fromisoformat(patient_row[2]),
             blood_type=BloodType(patient_row[3]),
             gender=patient_row[4],
-            weight_kg=patient_row[5],
-            height_cm=patient_row[6],
             allergies=allergies,
             medications=medications,
             medical_conditions=[],  # TODO: Implement if needed
             surgeries=[],  # TODO: Implement if needed
             emergency_contact=emergency_contact,
             recent_vitals=recent_vitals,
-            medical_devices=[],  # TODO: Implement if needed
             last_updated=datetime.now()
         )
         
