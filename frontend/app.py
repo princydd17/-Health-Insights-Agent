@@ -91,15 +91,13 @@ def upload_document():
         return jsonify({"status": "error", "message": "No file provided"}), 400
     
     file = request.files['document']
+    document_type = request.form.get('document_type')
     if file.filename == '':
         return jsonify({"status": "error", "message": "No file selected"}), 400
         
     if file and allowed_file(file.filename):
         try:
             # Create a subfolder based on document type
-            subfolder = 'lab_reports' if document_type == 'lab_report' else 'medications'
-            upload_folder = os.path.join(app.config['UPLOAD_FOLDER'], subfolder)
-            os.makedirs(upload_folder, exist_ok=True)
 
             filename = secure_filename(file.filename)
             file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
@@ -113,7 +111,8 @@ def upload_document():
             print(file_path)
             # Make a call to backend to get data
             chatbot = Chatbot()
-            print(chatbot.get_text_content(file_path))
+            print("Making the call")
+            print(chatbot.get_text_content(file_path,document_type))
 
             
             # Add to database

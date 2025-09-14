@@ -34,12 +34,13 @@ class Chatbot:
             "Authorization": "Bearer " + self.api_key
         }
 
-    def get_text_content(self, file_path: str) -> str:
+    def get_text_content(self, file_path,document_type) -> str:
         """
         Send a query to llm to parse text content
         """
         try:
-            return self.blocking_chat(file_path)
+            print("Making a call")
+            return self.blocking_chat(file_path,document_type)
         except Exception as e:
                 print("Error! Check the model is correctly loaded. More details in README troubleshooting section.")
                 print(e)
@@ -63,7 +64,7 @@ class Chatbot:
         while not stop_loading:
             continue
         print('')
-    def blocking_chat(self, file_path: str) -> str:
+    def blocking_chat(self, file_path: str, document_type: str) -> str:
         """
         Send a chat request to the model server and return the response
         
@@ -79,10 +80,54 @@ class Chatbot:
         mime_type = self.get_mime_type(file_path)
         filename = file_path.split("/")[-1]
         print("Reached chatbot")
-        
+        prompt = """Extract laboratory report information from the given text image as accurately as possible. Provide the output as a list of JSON objects, with each object representing one reported test.
+
+        Each JSON object must include the following fields (if available):
+
+        test_name
+
+        test_code (if present)
+
+        result_value
+
+        result_unit
+
+        reference_range
+
+        interpretation (e.g., Normal, High, Low, Abnormal)
+
+        test_date
+
+        ordering_doctor
+
+        notes (any additional remarks provided in the report)
+
+        If a field is missing in the report, set its value to null instead of omitting it. The final output should always be a list, even if there is only one test."""
+        if document_type!="lab_report":
+            prompt = """Extract prescription information from the given text image as accurately as possible. Provide the output as a list of JSON objects, with each object representing one prescribed medicine.
+
+            Each JSON object must include the following fields (if available):
+
+            medication_name
+
+            dosage
+
+            frequency (e.g., once daily, twice daily)
+
+            time_of_day (e.g., morning, evening, before food, after food)
+
+            start_date
+
+            end_date
+
+            prescribing_doctor
+
+            notes (any additional instructions like ‘take with water’)
+
+            If a field is missing in the prescription, set its value to null instead of omitting it. The final output should always be a list, even if there is only one medication."""
 
         data = {
-            "message": "Get text from this file",
+            "message": prompt,
             "mode": "chat",
             "sessionId": "example-session-id",
             "attachments": [
@@ -128,3 +173,6 @@ class Chatbot:
         except Exception as e:
             return f"Chat request failed. Error: {e}"
         
+if __name__ == '__main__':
+    stop_loading = False
+    chatbot = Chatbot()
