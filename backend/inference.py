@@ -10,6 +10,7 @@ import base64
 import requests
 import mimetypes
 
+stop_loading = False
 
 class Chatbot:
     def __init__(self):
@@ -55,6 +56,13 @@ class Chatbot:
         mime_type, _ = mimetypes.guess_type(image_path)
         return mime_type if mime_type else "application/octet-stream"
 
+    def loading_indicator(self) -> None:
+        """
+        Display a loading indicator in the console while the chat request is being processed
+        """
+        while not stop_loading:
+            continue
+        print('')
     def blocking_chat(self, file_path: str) -> str:
         """
         Send a chat request to the model server and return the response
@@ -63,10 +71,15 @@ class Chatbot:
         - message: The message to send to the chatbot
         """
 
+        global stop_loading
+        stop_loading = False
+        loading_thread = threading.Thread(target=self.loading_indicator)
+        loading_thread.start()
         base64_image = self.get_base64_encoded_image(file_path)
         mime_type = self.get_mime_type(file_path)
         filename = file_path.split("/")[-1]
         print("Reached chatbot")
+        
 
         data = {
             "message": "Get text from this file",
@@ -87,11 +100,28 @@ class Chatbot:
             headers=self.headers,
             json=data
         )
-        print(chat_response.json())
-
+        stop_loading = True
+        loading_thread.join()
+        buffer = chat_response.text
+        parsedText = ""
+        while "\n" in buffer:
+            line, buffer = buffer.split("\n", 1)
+            if line.startswith("data: "):
+                line = line[len("data: "):]
+            try:
+                parsed_chunk = json.loads(line.strip())
+                # print(parsed_chunk.get("textResponse", ""), end="", flush=True)
+                parsedText+= parsed_chunk.get("textResponse", "")
+                if parsed_chunk.get("close", False):
+                    parsedText+= ""
+            except json.JSONDecodeError:
+                # The line is not a complete JSON; wait for more data.
+                continue
+            except Exception as e:
+                # generic error handling, quit for debug
+                print(f"Error processing chunk: {e}")
         try:
-            print("Agent: ", end="")
-            return chat_response.json()['textResponse']
+            return parsedText
             
         except ValueError:
             return "Response is not valid JSON"
