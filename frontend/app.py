@@ -1,3 +1,4 @@
+import json
 from flask import Flask, render_template, jsonify, request
 import os
 import sys
@@ -85,6 +86,55 @@ def save_emergency_contact():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
+# @app.route('/api/upload-document', methods=['POST'])
+# def upload_document():
+#     if 'document' not in request.files:
+#         return jsonify({"status": "error", "message": "No file provided"}), 400
+    
+#     file = request.files['document']
+#     document_type = request.form.get('document_type')
+#     if file.filename == '':
+#         return jsonify({"status": "error", "message": "No file selected"}), 400
+        
+#     if file and allowed_file(file.filename):
+#         try:
+#             # Create a subfolder based on document type
+
+#             filename = secure_filename(file.filename)
+#             file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+
+            
+#             # Ensure directory exists
+#             os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+            
+#             # Save file
+#             file.save(file_path)
+#             print(file_path)
+#             # Make a call to backend to get data
+#             chatbot = Chatbot()
+#             print("Making the call")
+#             print(chatbot.get_text_content(file_path,document_type))
+
+            
+#             # Add to database
+#             conn = sqlite3.connect('data/database.db')
+#             cursor = conn.cursor()
+#             cursor.execute('''
+#                 INSERT INTO documents (filename, document_type, upload_date)
+#                 VALUES (?, ?, CURRENT_TIMESTAMP)
+#             ''', (filename, file.content_type))
+#             doc_id = cursor.lastrowid
+#             conn.commit()
+#             conn.close()
+            
+#             return jsonify({
+#                 "status": "success",
+#                 "message": "Document uploaded successfully",
+#                 "document_id": doc_id
+#             })
+#         except Exception as e:
+#             return jsonify({"status": "error", "message": str(e)}), 500
+
 @app.route('/api/upload-document', methods=['POST'])
 def upload_document():
     if 'document' not in request.files:
@@ -92,47 +142,55 @@ def upload_document():
     
     file = request.files['document']
     document_type = request.form.get('document_type')
+    print(document_type)
     if file.filename == '':
         return jsonify({"status": "error", "message": "No file selected"}), 400
         
     if file and allowed_file(file.filename):
         try:
-            # Create a subfolder based on document type
-
+            # Save file temporarily
             filename = secure_filename(file.filename)
             file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-
-            
-            # Ensure directory exists
             os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
-            
-            # Save file
             file.save(file_path)
-            print(file_path)
-            # Make a call to backend to get data
-            chatbot = Chatbot()
-            print("Making the call")
-            print(chatbot.get_text_content(file_path,document_type))
 
-            
-            # Add to database
+            # Extract text via chatbot
+            chatbot = Chatbot()
+            extracted_text = chatbot.get_text_content(file_path, document_type)
+            print(file)
+            # extracted_text = "data"
+            print("Extracted:", extracted_text)
+
+            # Store ONLY extracted text + timestamp
             conn = sqlite3.connect('data/database.db')
             cursor = conn.cursor()
+
             cursor.execute('''
-                INSERT INTO documents (filename, document_type, upload_date)
-                VALUES (?, ?, CURRENT_TIMESTAMP)
-            ''', (filename, file.content_type))
+                CREATE TABLE IF NOT EXISTS documents (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    extracted_text TEXT,
+                    upload_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+
+            cursor.execute('''
+                INSERT INTO documents (extracted_text)
+                VALUES (?)
+            ''', (extracted_text,))
+
             doc_id = cursor.lastrowid
             conn.commit()
             conn.close()
-            
+
             return jsonify({
                 "status": "success",
-                "message": "Document uploaded successfully",
+                "message": "Extracted text stored successfully",
                 "document_id": doc_id
             })
+
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)}), 500
+
 
 @app.route('/api/get-profile', methods=['GET'])
 def get_profile():

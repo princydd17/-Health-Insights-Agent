@@ -103,6 +103,7 @@ class Chatbot:
         notes (any additional remarks provided in the report)
 
         If a field is missing in the report, set its value to null instead of omitting it. The final output should always be a list, even if there is only one test."""
+        
         if document_type!="lab_report":
             prompt = """Extract prescription information from the given text image as accurately as possible. Provide the output as a list of JSON objects, with each object representing one prescribed medicine.
 
@@ -138,7 +139,8 @@ class Chatbot:
                 }
             ]
         }
-
+        print(document_type)
+        print(prompt)
         print("Sending Request")
         chat_response = requests.post(
             self.chat_url,
@@ -173,6 +175,3 @@ class Chatbot:
         except Exception as e:
             return f"Chat request failed. Error: {e}"
         
-if __name__ == '__main__':
-    stop_loading = False
-    chatbot = Chatbot()
