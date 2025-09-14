@@ -45,6 +45,18 @@ class Chatbot:
                 print("Error! Check the model is correctly loaded. More details in README troubleshooting section.")
                 print(e)
                 sys.exit(f"Error details: {e}")
+
+    def get_summary_content(self, prompt) -> str:
+        """
+        Send a query to llm to parse text content
+        """
+        try:
+            print("Making a call")
+            return self.blocking_summary_chat(prompt)
+        except Exception as e:
+                print("Error! Check the model is correctly loaded. More details in README troubleshooting section.")
+                print(e)
+                sys.exit(f"Error details: {e}")            
                 
 
     def get_base64_encoded_image(self, image_path:str):
@@ -150,6 +162,7 @@ class Chatbot:
         stop_loading = True
         loading_thread.join()
         buffer = chat_response.text
+        print(buffer)
         parsedText = ""
         while "\n" in buffer:
             line, buffer = buffer.split("\n", 1)
@@ -175,3 +188,60 @@ class Chatbot:
         except Exception as e:
             return f"Chat request failed. Error: {e}"
         
+    def blocking_summary_chat(self, prompt) -> str:
+        """
+        Send a chat request to the model server and return the response
+        
+        Inputs:
+        - message: The message to send to the chatbot
+        """
+
+        global stop_loading
+        stop_loading = False
+        loading_thread = threading.Thread(target=self.loading_indicator)
+        loading_thread.start()
+        
+        print("Reached chatbot")
+        
+        data = {
+            "message": prompt,
+            "mode": "chat",
+            "sessionId": "example-session-id",
+            "attachments": []
+        }
+        
+        print("Sending Request")
+        chat_response = requests.post(
+            self.chat_url,
+            headers=self.headers,
+            json=data
+        )
+        stop_loading = True
+        loading_thread.join()
+        buffer = chat_response.text
+        print(buffer)
+        parsedText = ""
+        while "\n" in buffer:
+            line, buffer = buffer.split("\n", 1)
+            if line.startswith("data: "):
+                line = line[len("data: "):]
+            try:
+                parsed_chunk = json.loads(line.strip())
+                # print(parsed_chunk.get("textResponse", ""), end="", flush=True)
+                parsedText+= parsed_chunk.get("textResponse", "")
+                if parsed_chunk.get("close", False):
+                    parsedText+= ""
+            except json.JSONDecodeError:
+                # The line is not a complete JSON; wait for more data.
+                continue
+            except Exception as e:
+                # generic error handling, quit for debug
+                print(f"Error processing chunk: {e}")
+        try:
+            return parsedText
+            
+        except ValueError:
+            return "Response is not valid JSON"
+        except Exception as e:
+            return f"Chat request failed. Error: {e}"
+            

@@ -232,6 +232,31 @@ def add_vital_metrics():
     
 @app.route('/api/patient-summary', methods=['GET'])
 def get_patient_summary():
+    try:
+        print("Getting documents")
+        conn = sqlite3.connect('data/database.db')
+        cursor = conn.cursor()
+        cursor.execute('SELECT extracted_text FROM documents')
+        documents = cursor.fetchall()
+        conn.close()
+        print("Got documents")
+        print(documents)
+        prompt = "Get me a summary of all the medications and reports."
+        for r in documents:
+            prompt+=', '.join(map(str,r))
+        print(prompt)    
+
+        chatbot = Chatbot()
+        extracted_text = chatbot.get_summary_content(prompt)
+        
+        print("Extracted:", extracted_text)
+        return jsonify({
+            "status": "success",
+            "summary": extracted_text
+        })
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
     
 
 if __name__ == '__main__':
