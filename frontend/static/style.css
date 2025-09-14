@@ -60,6 +60,7 @@ body {
     display: block;
 }
 
+
 /* Form styles */
 .form-group { margin-bottom: 1rem; }
 .form-group label { display: block; margin-bottom: 0.5rem; font-weight: 500; }
@@ -113,4 +114,49 @@ body {
 .qr-info {
     text-align: center;
     margin-top: 1rem;
+}
+
+/* Summary Styles */
+.summary-container {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 1rem;
+    margin-top: 1rem;
+}
+
+.summary-section {
+    background: #f8f9fa;
+    border-radius: 8px;
+    padding: 1rem;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
+
+.summary-section h3 {
+    color: var(--primary-color);
+    margin-bottom: 1rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 2px solid var(--primary-color);
+}
+
+.summary-content {
+    font-size: 0.95rem;
+}
+
+.summary-content p {
+    margin: 0.5rem 0;
+}
+
+.summary-content ul {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+
+.summary-content li {
+    padding: 0.5rem 0;
+    border-bottom: 1px solid #eee;
+}
+
+.summary-content li:last-child {
+    border-bottom: none;
 }

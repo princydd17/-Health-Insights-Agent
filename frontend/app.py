@@ -229,6 +229,10 @@ def add_vital_metrics():
         return jsonify({"status": "success", "message": "Vital metrics added"})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
+    
+@app.route('/api/patient-summary', methods=['GET'])
+def get_patient_summary():
+    
 
 if __name__ == '__main__':
     # Initialize database
