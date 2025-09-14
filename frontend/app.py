@@ -9,6 +9,7 @@ import sqlite3
 from components.emergency_profile_system import EmergencyProfileManager, BloodType, SeverityLevel
 from datetime import datetime
 from storage.database import init_db
+from backend.inference import Chatbot
 
 
 app = Flask(__name__)
@@ -17,7 +18,7 @@ app = Flask(__name__)
 profile_manager = EmergencyProfileManager("./storage")
 
 # Add configuration
-app.config['UPLOAD_FOLDER'] = 'data/documents'
+app.config['UPLOAD_FOLDER'] = os.path.join("data","documents")
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'pdf'}
 
@@ -594,6 +595,11 @@ def upload_document():
             
             # Save file
             file.save(file_path)
+            print(file_path)
+            # Make a call to backend to get data
+            chatbot = Chatbot()
+            print(chatbot.get_text_content(file_path))
+
             
             # Add to database
             conn = sqlite3.connect('data/database.db')
